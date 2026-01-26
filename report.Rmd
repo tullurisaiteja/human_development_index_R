@@ -1,0 +1,261 @@
+---
+title: "End-to-End Economic & Social Indicators Analysis"
+subtitle: "How Economic, Health, and Education Factors Drive Human Development"
+author: "Sana Ur Rehman Arain"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+```
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  tidyverse, kableExtra, corrplot, factoextra,
+  tidymodels, vip, randomForest, naniar
+)
+```
+
+---
+
+## 1. Executive Summary
+
+This project investigates the **primary drivers of the Human Development Index (HDI)** using **4,200+ country–year observations (2000–2022)**.
+By integrating **World Bank economic indicators** with **UNDP human development data**, the analysis moves beyond correlation toward **predictive and explanatory modeling**.
+
+### Key Findings
+
+* **Non-Linearity Matters:**
+  Random Forest outperformed Linear Regression by **54%** (RMSE **0.026 vs 0.056**), confirming that development follows complex, non-linear patterns.
+
+* **Wealth vs. Well-Being:**
+  While GDP per capita is the strongest single predictor, **Health Expenditure** and **Unemployment Rate** act as critical *bottlenecks* to development.
+
+* **The Preston Curve Validated:**
+  Economic growth delivers rapid HDI gains for low-income countries but **plateaus** among high-income economies.
+
+---
+
+## 2. Data Engineering & Quality
+
+Two complementary datasets were combined using a rigorous **ETL (Extract–Transform–Load)** pipeline.
+
+**Data Sources**
+
+* **World Bank API:** Economic, labor, education, and health indicators
+* **UNDP:** Human Development Index (HDI)
+
+**Key Processing Steps**
+
+* Harmonized country identifiers using **ISO3C codes**
+* Constructed a balanced panel (2000–2022)
+* Imputed missing values using **group-wise Down–Up filling**
+
+### Final Dataset
+
+* **4,290 observations**
+* **15 development indicators**
+
+```{r}
+master_data <- read_csv("data/master_data_final.csv")
+
+master_data %>% 
+  sample_n(5) %>% 
+  select(country, year, hdi, gdp_per_capita, life_expectancy_wb) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+---
+
+## 3. Missing Data Diagnostics
+
+Before imputation, we examined the structure of missingness to ensure data integrity.
+
+```{r fig.height=5}
+vis_miss(master_data, warn_large_data = FALSE) +
+  labs(
+    title = "Missing Data Map (Pre-Imputation)",
+    subtitle = "Sparse but structured missingness across time-series indicators"
+  )
+```
+
+---
+
+## 4. Exploratory Data Analysis (EDA)
+
+### 4.1 Correlation Structure
+
+Strong linear relationships emerge between HDI and health-related variables, particularly **Life Expectancy**.
+
+```{r fig.height=5}
+numeric_data <- master_data %>%
+  select(
+    hdi, gdp_per_capita, life_expectancy_wb,
+    unemployment_rate, education_expenditure,
+    health_expenditure
+  ) %>%
+  drop_na()
+
+cor_matrix <- cor(numeric_data)
+
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  order = "hclust",
+  addCoef.col = "black",
+  tl.col = "black",
+  diag = FALSE,
+  title = "Correlation Matrix of Development Indicators",
+  mar = c(0, 0, 2, 0)
+)
+```
+
+---
+
+### 4.2 The Preston Curve (Wealth vs. Health)
+
+This figure visualizes **diminishing returns of income on health outcomes**.
+
+```{r fig.height=5}
+ggplot(master_data, aes(
+  x = gdp_per_capita,
+  y = life_expectancy_wb,
+  color = hdi
+)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", color = "black", se = FALSE) +
+  scale_x_log10(labels = scales::dollar) +
+  scale_color_viridis_c(option = "magma") +
+  theme_minimal() +
+  labs(
+    title = "The Preston Curve",
+    subtitle = "GDP per Capita vs. Life Expectancy (Colored by HDI)",
+    x = "GDP per Capita (Log Scale)",
+    y = "Life Expectancy (Years)"
+  )
+```
+
+---
+
+### 4.3 Structural Clustering via PCA
+
+Principal Component Analysis reveals **distinct regional development patterns**.
+
+```{r fig.height=6}
+pca_ready <- master_data %>%
+  select(
+    region, gdp_per_capita, life_expectancy_wb,
+    unemployment_rate, education_expenditure,
+    health_expenditure
+  ) %>%
+  drop_na()
+
+pca_result <- prcomp(
+  pca_ready %>% select(-region),
+  center = TRUE,
+  scale. = TRUE
+)
+
+fviz_pca_biplot(
+  pca_result,
+  geom.ind = "point",
+  pointshape = 21,
+  pointsize = 2.5,
+  fill.ind = pca_ready$region,
+  col.ind = "black",
+  palette = "jco",
+  addEllipses = TRUE,
+  label = "var",
+  col.var = "red",
+  repel = TRUE,
+  legend.title = "Region"
+) +
+  labs(title = "PCA: How Countries Cluster by Development Metrics")
+```
+
+---
+
+## 5. Statistical Modeling & Machine Learning
+
+We compare **Linear Regression** and **Random Forest** using an **80/20 train–test split**.
+
+```{r}
+set.seed(123)
+
+model_data <- master_data %>%
+  select(
+    hdi, gdp_per_capita, life_expectancy_wb,
+    unemployment_rate, education_expenditure,
+    health_expenditure
+  ) %>%
+  drop_na()
+
+data_split <- initial_split(model_data, prop = 0.80)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+---
+
+### 5.1 Feature Importance (Random Forest)
+
+```{r fig.height=5}
+rf_spec <- rand_forest(trees = 500, mode = "regression") %>%
+  set_engine("randomForest", importance = TRUE)
+
+rf_fit <- rf_spec %>% fit(hdi ~ ., data = train_data)
+
+rf_fit %>%
+  extract_fit_engine() %>%
+  vip(geom = "col") +
+  theme_minimal() +
+  labs(
+    title = "Random Forest Feature Importance",
+    y = "Importance Score"
+  )
+```
+
+---
+
+### 5.2 Model Performance Comparison
+
+```{r}
+lm_spec <- linear_reg() %>% set_engine("lm")
+lm_fit  <- lm_spec %>% fit(hdi ~ ., data = train_data)
+
+results <- test_data %>%
+  bind_cols(predict(lm_fit, test_data) %>% rename(LM = .pred)) %>%
+  bind_cols(predict(rf_fit, test_data) %>% rename(RF = .pred))
+
+bind_rows(
+  results %>% metrics(hdi, LM) %>% mutate(Model = "Linear Regression"),
+  results %>% metrics(hdi, RF) %>% mutate(Model = "Random Forest")
+) %>%
+  filter(.metric == "rmse") %>%
+  select(Model, RMSE = .estimate) %>%
+  arrange(RMSE) %>%
+  kable() %>%
+  kable_styling(full_width = FALSE, bootstrap_options = "striped")
+```
+
+---
+
+## 6. Conclusion
+
+This analysis demonstrates that **economic growth is necessary but not sufficient** for human development.
+Once basic income thresholds are reached, **health investment and labor market conditions** become decisive.
+
+From a policy perspective, the results strongly suggest that **social infrastructure—not income alone—drives long-run human well-being**.
+
+---
