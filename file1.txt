@@ -5,7 +5,4 @@ again editing on develop branch
 odhjbdsncbncbcbsbchjbshbjcs ncs na 
 hjhcjdchdbchdb dc bbcjxbn mxknkcnx xm xmnx fhjhfjfjdjfhdfdflerekjkdn
 saiteja xreted this file and modified
-=======
-my name is saiteja
-i am in feature branch 
->>>>>>> feature1
+====entered in to quality branch
